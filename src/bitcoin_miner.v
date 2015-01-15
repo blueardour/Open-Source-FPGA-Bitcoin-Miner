@@ -109,7 +109,7 @@ module bitcoin_miner (osc_clk, rst_n, hit, hit_nonce);
 	always @ (posedge hash_clk)
 	begin
 	  if(~rst_n) begin hit <= 1'b0; hit_nonce <= hit_nonce; end
-	  else if((hash2[255:224] == 32'h00000000) && !feedback_d1) begin hit <= 1'b1; hit_nonce <= nonce; end
+	  else if((hash2 >= 256'hffffffff) && !feedback_d1) begin hit <= 1'b1; hit_nonce <= nonce; end
 	  else begin hit <= hit; hit_nonce <= hit_nonce; end
 	end
 	  
