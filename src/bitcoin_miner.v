@@ -21,7 +21,7 @@
 
 `timescale 1ns/1ps
 
-module bitcoin_miner (osc_clk, rst_n, hit, hit_nonce);
+module bitcoin_miner (osc_clk, rst_n, serial_in, ready, hit, serial_out);
 
 	// The LOOP_LOG2 parameter determines how unrolled the SHA-256
 	// calculations are. For example, a setting of 0 will completely
@@ -33,7 +33,7 @@ module bitcoin_miner (osc_clk, rst_n, hit, hit_nonce);
 	// And so on.
 	//
 	// Valid range: [0, 5]
-	parameter LOOP_LOG2 = 5;
+	parameter LOOP_LOG2 = 0;
 
 	// No need to adjust these parameters
 	localparam [5:0] LOOP = (6'd1 << LOOP_LOG2);
@@ -42,16 +42,21 @@ module bitcoin_miner (osc_clk, rst_n, hit, hit_nonce);
 	// hash (except when LOOP_LOG2 == 0 or 1, where the offset is 131 or
 	// 66 respectively).
 	localparam [31:0] GOLDEN_NONCE_OFFSET = (32'd1 << (7 - LOOP_LOG2)) + 32'd1;
+	
+	localparam [383:0] PRE = 384'h000002800000000000000000000000000000000000000000000000000000000000000000000000000000000080000000;
 
 	input osc_clk;
 	input rst_n;
-
+	
+	input ready;
+	input [31:0] serial_in;
+	
 	output hit;
-	output [31:0] hit_nonce;
+	output [31:0] serial_out;
 	
 	////
 	reg hit;
-	reg [31:0] hit_nonce;
+	reg [31:0] serial_out;
 
 	////	
 	reg [31:0] nonce;
@@ -59,13 +64,20 @@ module bitcoin_miner (osc_clk, rst_n, hit, hit_nonce);
 	reg [5:0] cnt;
 	reg feedback;
 	
-	wire [255:0] state = 256'h010101010101;
-	wire [511:0] data = {384'h000002800000000000000000000000000000000000000000000000000000000000000000000000000000000080000000, nonce, 96'h0};
-
+	//// Control Unit
+	reg feedback_d1;
+	wire [5:0] cnt_next;
+	wire [31:0] nonce_next;
+	wire feedback_next;
+	
+	reg [351:0] buffer;
+	wire [255:0] state = buffer[351:96];
+	wire [511:0] data = {PRE, nonce, buffer[95:0]};
 	
 	//// Hashers
 	assign hash_clk = osc_clk;
-	wire reset = ~ rst_n;
+	
+	wire reset = ready | ~ rst_n;
 	
 	sha256_transform #(.LOOP(LOOP)) uut (
 		.clk(hash_clk),
@@ -84,11 +96,13 @@ module bitcoin_miner (osc_clk, rst_n, hit, hit_nonce);
 		.tx_hash(hash2)
 	);
 
-	//// Control Unit
-	reg feedback_d1;
-	wire [5:0] cnt_next;
-	wire [31:0] nonce_next;
-	wire feedback_next;
+	always @ (posedge hash_clk) 
+	begin
+		if(~ rst_n) buffer <= 352'h00;
+		else if(ready) buffer <= {buffer[319:0], serial_in};
+		else buffer <= buffer;
+	end
+
 	
 	assign cnt_next =  reset ? 6'd0 : (LOOP == 1) ? 6'd0 : (cnt + 6'd1) & (LOOP-1);
 	// On the first count (cnt==0), load data from previous stage (no feedback)
@@ -96,7 +110,6 @@ module bitcoin_miner (osc_clk, rst_n, hit, hit_nonce);
 	// This reduces the throughput by a factor of (LOOP), but also reduces the design size by the same amount
 	assign feedback_next = (LOOP == 1) ? 1'b0 : (cnt_next != {(LOOP_LOG2){1'b0}});
 	assign nonce_next = reset ? 32'd0 : feedback_next ? nonce : (nonce + 32'd1);
-
 	
 	always @ (posedge hash_clk)
 	begin
@@ -108,9 +121,9 @@ module bitcoin_miner (osc_clk, rst_n, hit, hit_nonce);
 
 	always @ (posedge hash_clk)
 	begin
-	  if(~rst_n) begin hit <= 1'b0; hit_nonce <= hit_nonce; end
-	  else if((hash2 >= 256'hffffffff) && !feedback_d1) begin hit <= 1'b1; hit_nonce <= nonce; end
-	  else begin hit <= hit; hit_nonce <= hit_nonce; end
+	  if(reset) begin hit <= 1'b0; serial_out <= 32'h00; end
+	  else if((hash2 >= {32'hffffffff, 224'hffffffff}) && !feedback_d1) begin hit <= 1'b1; serial_out <= nonce; end
+	  else begin hit <= hit; serial_out <= serial_out; end
 	end
 	  
 endmodule
